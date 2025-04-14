@@ -1,15 +1,14 @@
-
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import asyncio
 import random
-import os
 
 intents = discord.Intents.default()
 intents.message_content = True
+
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-maps = [
+MAP_POOL = [
     "CTF-Cynosure][LE105",
     "CTF-Vaultcity-LE102",
     "CTF-Sub-ZeroLE104",
@@ -23,85 +22,75 @@ maps = [
     "CTF-NovemberCE127"
 ]
 
-active_sessions = {}
+@bot.event
+async def on_ready():
+    print(f'Bot connected as {bot.user}')
 
 @bot.command()
 async def startmapban(ctx):
-    if ctx.channel.id in active_sessions:
-        await ctx.send("Map ban is already in progress in this channel.")
-        return
+    await ctx.send("🎮 Map elimination is starting!")
 
-    await ctx.send("Please mention two players who will be banning maps (e.g. @Player1 @Player2):")
+    # Get two users mentioned
+    def check_author(m):
+        return m.author != bot.user and m.channel == ctx.channel
 
-    def check_players(m):
-        return m.channel == ctx.channel and len(m.mentions) == 2
-
+    await ctx.send("Please mention **two players** who will be banning maps (e.g. @Player1 @Player2):")
     try:
-        msg = await bot.wait_for("message", timeout=60.0, check=check_players)
+        msg = await bot.wait_for('message', check=check_author, timeout=60.0)
+        mentions = msg.mentions
+        if len(mentions) != 2:
+            await ctx.send("❌ You must mention exactly two players.")
+            return
+        player_a, player_b = mentions
     except asyncio.TimeoutError:
-        await ctx.send("Timed out waiting for player mentions.")
+        await ctx.send("⏰ Time's up. Try starting again.")
         return
 
-    player1, player2 = msg.mentions
-    players = [player1, player2]
+    players = [player_a, player_b]
     random.shuffle(players)
+    current_index = 0
+    current_player = players[current_index]
 
-    await ctx.send(f"Randomly selected: {players[0].mention} will start the map banning.")
+    await ctx.send(f"🔀 Random draw complete! {current_player.mention} will start the elimination.")
 
-    session = {
-        "players": players,
-        "current_turn": 0,
-        "remaining_maps": sorted(maps)
-    }
+    remaining_maps = sorted(MAP_POOL)
 
-    active_sessions[ctx.channel.id] = session
-    await next_ban_round(ctx)
+    while len(remaining_maps) > 1:
+        await ctx.send(f"""{current_player.mention}, please eliminate a map.
 
-async def next_ban_round(ctx):
-    session = active_sessions[ctx.channel.id]
-    remaining = session["remaining_maps"]
+Remaining maps:
+```
+{chr(10).join(remaining_maps)}
+```
+⏳ You have 30 seconds.""")
 
-    if len(remaining) == 1:
-        await ctx.send(f"Final map to play is: **{remaining[0]}**")
-        del active_sessions[ctx.channel.id]
-        return
+        try:
+            def elimination_check(m):
+                return m.author == current_player and m.channel == ctx.channel and m.content.strip() in remaining_maps
 
-    current_player = session["players"][session["current_turn"] % 2]
-    await ctx.send(f"{current_player.mention}, please type the name of the map to remove from the list:
-```\n" + "\n".join(remaining) + "\n``` (You have 30 seconds)")
+            reminder = asyncio.create_task(reminder_message(ctx, current_player))
+            msg = await bot.wait_for('message', check=elimination_check, timeout=30.0)
+            reminder.cancel()
+            eliminated = msg.content.strip()
+            remaining_maps.remove(eliminated)
+            await ctx.send(f"❌ {eliminated} eliminated by {current_player.mention}.")
+        except asyncio.TimeoutError:
+            reminder.cancel()
+            eliminated = remaining_maps[0]
+            remaining_maps.remove(eliminated)
+            await ctx.send(f"⏰ Time's up! Automatically eliminating **{eliminated}**.")
 
-    def check(m):
-        return m.author == current_player and m.channel == ctx.channel
+        current_index = (current_index + 1) % 2
+        current_player = players[current_index]
 
-    try:
-        reminder_task = asyncio.create_task(reminder(ctx, current_player))
-        msg = await bot.wait_for("message", timeout=30.0, check=check)
-        reminder_task.cancel()
-        selected_map = msg.content.strip()
+    await ctx.send(f"✅ Final map selected: **{remaining_maps[0]}**")
 
-        if selected_map in remaining:
-            remaining.remove(selected_map)
-            session["current_turn"] += 1
-            await next_ban_round(ctx)
-        else:
-            await ctx.send("Invalid map name. Automatically removing the first map.")
-            removed = remaining.pop(0)
-            await ctx.send(f"Removed: {removed}")
-            session["current_turn"] += 1
-            await next_ban_round(ctx)
+def setup(bot):
+    bot.add_command(startmapban)
 
-    except asyncio.TimeoutError:
-        removed = remaining.pop(0)
-        await ctx.send(f"{current_player.mention} took too long. Removed first map: {removed}")
-        session["current_turn"] += 1
-        await next_ban_round(ctx)
-
-async def reminder(ctx, player):
+async def reminder_message(ctx, player):
     await asyncio.sleep(20)
-    await ctx.send(f"{player.mention}, 10 seconds left to pick a map!")
+    await ctx.send(f"⏳ {player.mention}, 10 seconds left to eliminate a map!")
 
-@bot.event
-async def on_ready():
-    print(f"Bot connected as {bot.user}")
-
-bot.run(os.getenv("DISCORD_TOKEN"))
+# Replace this with your bot token
+bot.run("YOUR_DISCORD_BOT_TOKEN")
